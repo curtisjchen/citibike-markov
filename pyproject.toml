@@ -16,3 +16,8 @@ dependencies = [
     "streamlit>=1.54.0",
     "streamlit-folium>=0.26.2",
 ]
+
+[dependency-groups]
+dev = [
+    "nbstripout>=0.9.1",
+]
