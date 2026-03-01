@@ -13,4 +13,5 @@ wheels/
 /notebooks/*.ipynb
 
 #data
-/data/raw/*.csv
+/data/raw/*
+
