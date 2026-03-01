@@ -25,3 +25,4 @@ python main.py
 - Python 3.8+
 - pandas
 - numpy
+- scipy
