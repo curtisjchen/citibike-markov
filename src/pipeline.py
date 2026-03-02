@@ -37,6 +37,8 @@ def main():
     parser.add_argument('--alpha2',         default='0.01')
     parser.add_argument('--bin-minutes',    default='60',
                         help='Bin size in minutes (60=hourly, 30=half-hourly, 15=quarter-hourly)')
+    parser.add_argument('--temp-dir',       default=os.path.join(SRC_DIR, '..', 'temp'))
+    parser.add_argument('--keep-temp',      action='store_true')
     args = parser.parse_args()
 
     if args.download or args.download_only:
@@ -58,6 +60,8 @@ def main():
         '--alpha1',     args.alpha1,
         '--alpha2',     args.alpha2,
         '--bin-minutes', args.bin_minutes,
+        '--temp-dir',    args.temp_dir,
+        *([ '--keep-temp'] if args.keep_temp else []),
     ])
 
     # continuous_pipeline.py will go here once implemented

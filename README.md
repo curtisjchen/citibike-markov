@@ -31,23 +31,15 @@ uv sync
 
 ## Usage
 
-### 1. Download data
+### 1. Download data and compute outputs
 
 Downloads Citibike trip data from S3 into `data/raw/{yyyymm}/`:
 
 ```bash
-uv run src/download_data.py
+uv run src/pipeline.py --bin-minutes 15/30/60
 ```
 
-This fetches monthly `.zip` files from `202401` onwards. Each file is ~100–400MB so expect the full dataset to take a while. Already-downloaded months are skipped automatically.
-
-### 2. Run the pipeline
-
-Filters stations, builds transition matrices, computes stationary distributions, and saves outputs:
-
-```bash
-uv run src/pipeline.py
-```
+This fetches monthly `.zip` files from `202001` onwards. Each file is ~100–400MB so expect the full dataset to take a while. Already-downloaded months are skipped automatically. Filters stations, builds transition matrices, computes stationary distributions, and saves outputs. You can specify time step length using `--bin-minutes` argument.
 
 Outputs written to `outputs/`:
 ```
@@ -58,7 +50,7 @@ outputs/
 └── stations.json           # station metadata — name, lat, lng
 ```
 
-### 3. Launch the app
+### 2. Launch the app
 
 ```bash
 uv run streamlit run app.py
@@ -105,7 +97,7 @@ Computed via eigendecomposition of `Pᵀ` — the stationary distribution `π` i
 
 ### Hierarchical smoothing
 
-Sparse hour-day bins (e.g. Tuesday 3am) are smoothed against coarser aggregates:
+Sparse bins (e.g. Tuesday 2:15am) are smoothed against coarser aggregates:
 
 | Level | Weight |
 |---|---|

@@ -98,17 +98,54 @@ def fetch_zip(urls, label):
     return None
 
 
-def extract_month(z, ym, save_dir):
-    """Extract CSVs matching yyyymm from a ZipFile into save_dir/yyyymm/."""
-    ym_dir    = os.path.join(save_dir, ym)
+def extract_flat(z, member, dest_dir):
+    """Extract a single zip member flat into dest_dir (no subdirectory nesting)."""
+    filename = os.path.basename(member)
+    if not filename:
+        return
+    dest = os.path.join(dest_dir, filename)
+    with z.open(member) as src, open(dest, 'wb') as dst:
+        dst.write(src.read())
+    return filename
+
+
+def extract_month(z, ym, save_dir, dest_dir=None):
+    """Extract CSVs matching yyyymm from a ZipFile into dest_dir (defaults to save_dir/yyyymm/).
+    
+    Handles two structures:
+    - Flat zip: zip contains CSVs directly
+    - Nested zip: zip contains inner .zip files which contain CSVs (pre-2024 NYC annual format)
+    """
+    ym_dir = dest_dir if dest_dir is not None else os.path.join(save_dir, ym)
     os.makedirs(ym_dir, exist_ok=True)
-    csv_files = [f for f in z.namelist() if f.endswith('.csv') and ym in f]
+    names  = z.namelist()
+
+    # check if this zip contains inner zips matching our month
+    inner_zips = [f for f in names if f.endswith('.zip') and ym in f
+                   and '__MACOSX' not in f and not os.path.basename(f).startswith('._')]
+    if inner_zips:
+        # nested zip — extract inner zip for this month then get CSVs from it
+        for inner_zip_path in inner_zips:
+            inner_bytes = z.read(inner_zip_path)
+            try:
+                inner_z   = zipfile.ZipFile(io.BytesIO(inner_bytes))
+                csv_files = [f for f in inner_z.namelist() if f.endswith('.csv') and '__MACOSX' not in f]
+                for csv_file in csv_files:
+                    fname = extract_flat(inner_z, csv_file, ym_dir)
+                    print(f"[{ym}] Extracted {fname}")
+            except zipfile.BadZipFile:
+                # not actually a zip — treat as CSV directly
+                fname = extract_flat(z, inner_zip_path, ym_dir)
+                print(f"[{ym}] Extracted {fname} (not a zip)")
+        return len(inner_zips) > 0
+
+    # flat zip — CSVs are directly inside
+    csv_files = [f for f in names if f.endswith('.csv') and ym in f and '__MACOSX' not in f]
     if not csv_files:
-        # fallback — extract all CSVs if none match the yyyymm pattern
-        csv_files = [f for f in z.namelist() if f.endswith('.csv')]
+        csv_files = [f for f in names if f.endswith('.csv') and '__MACOSX' not in f]
     for csv_file in csv_files:
-        z.extract(csv_file, ym_dir)
-        print(f"[{ym}] Extracted {os.path.basename(csv_file)}")
+        fname = extract_flat(z, csv_file, ym_dir)
+        print(f"[{ym}] Extracted {fname}")
     return len(csv_files) > 0
 
 
@@ -118,22 +155,25 @@ def download_and_extract(ym, save_dir, annual_cache={}, jc=False):
     cache_key  = f"{'jc' if jc else 'nyc'}-{year}"
     label      = f"{'JC-' if jc else ''}{ym}"
 
-    if year >= ANNUAL_URL_CUTOFF:
+    if jc or year >= ANNUAL_URL_CUTOFF:
+        # JC is always monthly; NYC 2024+ is monthly
         buf = fetch_zip(get_urls(ym, jc), label)
+        
         if buf is None:
             return False
         z = zipfile.ZipFile(buf)
-        return extract_month(z, ym, save_dir)
+        return extract_month(z, ym, save_dir, dest_dir=save_dir)
 
     else:
+        # NYC pre-2024 — annual zip cached per year
         if cache_key not in annual_cache:
-            buf = fetch_zip(get_urls(ym, jc), f"{'JC-' if jc else ''}{year}")
+            buf = fetch_zip(get_urls(ym, jc), str(year))
             if buf is None:
                 return False
             annual_cache[cache_key] = zipfile.ZipFile(buf)
-            print(f"[{cache_key}] Annual zip cached — will extract individual months from it")
+            print(f"[{year}] Annual zip cached — extracting months individually")
         z = annual_cache[cache_key]
-        return extract_month(z, ym, save_dir)
+        return extract_month(z, ym, save_dir, dest_dir=save_dir)
 
 
 def main(start=DEFAULT_START, end=DEFAULT_END, data_dir=DEFAULT_DATA_DIR):
