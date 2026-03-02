@@ -39,7 +39,9 @@ Downloads Citibike trip data from S3 into `data/raw/{yyyymm}/`:
 uv run src/pipeline.py --bin-minutes 15/30/60
 ```
 
-This fetches monthly `.zip` files from `202001` onwards. Each file is ~100–400MB so expect the full dataset to take a while. Already-downloaded months are skipped automatically. Filters stations, builds transition matrices, computes stationary distributions, and saves outputs. You can specify time step length using `--bin-minutes` argument.
+This fetches monthly `.zip` files from `202001` onwards. Each file is ~100–400MB so expect the full dataset to take a while. Already-downloaded months are skipped automatically. 
+
+Second part of the pipeline filters stations by finding the largest connected componenet, ensuring the transition matrix is irreducible; builds transition matrices from data; computes stationary distributions from transition matrices; and saves outputs. You can specify quantized time step length using `--bin-minutes` argument.
 
 Outputs written to `outputs/`:
 ```
