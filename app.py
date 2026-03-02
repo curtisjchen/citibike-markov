@@ -33,15 +33,16 @@ st.markdown("""
 # ── load data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    pi_matrix  = np.load('outputs/pi_by_hour.npy')
-    flow_ratio          = np.load('outputs/flow_ratio.npy')
-    flow_ratio_by_hour  = np.load('outputs/flow_ratio_by_hour.npy')
+    pi_matrix         = np.load('outputs/pi_by_hour.npy')
+    pi_day_hour        = np.load('outputs/pi_by_day_hour.npy')
+    flow_ratio         = np.load('outputs/flow_ratio.npy')
+    flow_ratio_by_day_hour = np.load('outputs/flow_ratio_by_day_hour.npy')
     with open('outputs/stations.json', 'r') as f:
         station_info = json.load(f)
     station_info = {int(k): v for k, v in station_info.items()}
-    return pi_matrix, flow_ratio, flow_ratio_by_hour, station_info
+    return pi_matrix, pi_day_hour, flow_ratio, flow_ratio_by_day_hour, station_info
 
-pi_matrix, flow_ratio, flow_ratio_by_hour, station_info = load_data()
+pi_matrix, pi_day_hour, flow_ratio, flow_ratio_by_day_hour, station_info = load_data()
 n_stations   = pi_matrix.shape[1]
 uniform      = 1 / n_stations
 name_to_idx  = {info['name']: idx for idx, info in station_info.items() if info.get('name')}
@@ -49,8 +50,8 @@ sorted_names = sorted(name_to_idx.keys())
 
 # ── cache pre-computed station data per hour (no lambdas, pickle-safe) ──────────
 @st.cache_data
-def compute_station_data(hour):
-    _pi  = pi_matrix[hour]
+def compute_station_data(day, hour):
+    _pi  = pi_day_hour[day, hour]
     _min = _pi.min()
     _max = _pi.max()
     rows = []
@@ -70,8 +71,8 @@ def compute_station_data(hour):
     return rows
 
 # ── build folium map from cached data ────────────────────────────────────────
-def build_map(hour, selected_name=None):
-    rows = compute_station_data(hour)
+def build_map(day, hour, selected_name=None):
+    rows = compute_station_data(day, hour)
     m = folium.Map(location=[40.738, -73.99], zoom_start=12, tiles='CartoDB dark_matter')
     selected_row = None
     for row in rows:
@@ -109,9 +110,10 @@ def build_map(hour, selected_name=None):
 
 # ── warm cache for all 24 hours on first load ─────────────────────────────────
 if 'cache_warmed' not in st.session_state:
-    with st.spinner("Loading map data for all hours..."):
-        for h in range(24):
-            compute_station_data(h)
+    with st.spinner("Loading map data for all hours and days..."):
+        for d in range(7):
+            for h in range(24):
+                compute_station_data(d, h)
     st.session_state.cache_warmed = True
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -124,22 +126,28 @@ if 'selected_name' not in st.session_state:
 st.markdown("# 🚲 CITIBIKE EXPLORER")
 
 # ── controls ──────────────────────────────────────────────────────────────────
-ctrl_left, ctrl_mid = st.columns([6, 1])
+DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+ctrl_day, ctrl_left, ctrl_mid = st.columns([2, 4, 1])
+with ctrl_day:
+    day = st.select_slider("Day", options=list(range(7)),
+                           format_func=lambda d: DAYS[d],
+                           value=0, label_visibility="collapsed")
 with ctrl_left:
     hour = st.slider("Hour of day", 0, 23, 8, label_visibility="collapsed")
 with ctrl_mid:
     period = "AM" if hour < 12 else "PM"
     dh = hour % 12 or 12
     st.markdown(f"""
-    <div style="padding-top:4px; text-align:center">
-        <span style="font-family:'IBM Plex Mono',monospace; font-size:28px; color:#00d4aa; font-weight:600">{dh}</span>
-        <span style="font-family:'IBM Plex Mono',monospace; font-size:14px; color:#6b7280">{period}</span>
+    <div style="padding-top:6px; text-align:center; line-height:1.2">
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6b7280; letter-spacing:2px; text-transform:uppercase; display:block">{DAYS[day][:3]}</span>
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:26px; color:#00d4aa; font-weight:600">{dh}</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#6b7280; margin-left:2px">{period}</span>
     </div>""", unsafe_allow_html=True)
 top_n = 30
 
-# ── pi and flow score for this hour ──────────────────────────────────────────
-pi         = pi_matrix[hour]
-flow_score = (flow_ratio - 1) * pi * n_stations   # scaled: 1.0 = average station, balanced flow
+# ── pi and flow score for this hour + day ────────────────────────────────────
+pi         = pi_day_hour[day, hour]
+flow_score = (flow_ratio_by_day_hour[day, hour] - 1) * pi * n_stations
 
 top_idx    = int(np.argsort(pi)[-1])
 bot_idx    = int(np.argsort(pi)[0])
@@ -170,7 +178,7 @@ with map_col:
     st.markdown('<div class="section-header">Station map — π_i at selected hour</div>', unsafe_allow_html=True)
 
     with st.spinner("Loading map..."):
-        result = st_folium(build_map(hour, selected_name=st.session_state.selected_name), width=None, height=650,
+        result = st_folium(build_map(day, hour, selected_name=st.session_state.selected_name), width=None, height=650,
                            returned_objects=["last_object_clicked_tooltip"])
 
     clicked = result.get("last_object_clicked_tooltip")
@@ -210,10 +218,10 @@ with dive_col:
             sel_idx    = st.session_state.selected_idx
             sel_name   = st.session_state.selected_name
             sel_pi     = float(pi[sel_idx])
-            sel_fr     = float(flow_ratio_by_hour[hour][sel_idx])
-            sel_fs     = float((flow_ratio_by_hour[hour][sel_idx] - 1) * pi[sel_idx] * n_stations)
-            hourly_pi  = [float(pi_matrix[h][sel_idx]) for h in range(24)]
-            hourly_fs  = [float((flow_ratio_by_hour[h][sel_idx] - 1) * pi_matrix[h][sel_idx] * n_stations) for h in range(24)]
+            sel_fr     = float(flow_ratio_by_day_hour[day, hour][sel_idx])
+            sel_fs     = float((flow_ratio_by_day_hour[day, hour][sel_idx] - 1) * pi[sel_idx] * n_stations)
+            hourly_pi  = [float(pi_day_hour[day, h][sel_idx]) for h in range(24)]
+            hourly_fs  = [float((flow_ratio_by_day_hour[day, h][sel_idx] - 1) * pi_day_hour[day, h][sel_idx] * n_stations) for h in range(24)]
             peak_h    = int(np.argmax(hourly_pi))
             peak_dh   = peak_h % 12 or 12
             peak_per  = "AM" if peak_h < 12 else "PM"
@@ -221,7 +229,7 @@ with dive_col:
             st.markdown(f"""
             <div class="selected-banner">
                 <div class="selected-name">{sel_name}</div>
-                <div class="selected-sub">π = {sel_pi:.5f} &nbsp;·&nbsp; {sel_pi/uniform:.1f}× average at {dh}{period} &nbsp;·&nbsp; flow ratio = {sel_fr:.2f} &nbsp;·&nbsp; score = {sel_fs:.3f}</div>
+                <div class="selected-sub">π = {sel_pi:.5f} &nbsp;·&nbsp; {sel_pi/uniform:.1f}× average at {DAYS[day]} {dh}{period} &nbsp;·&nbsp; flow ratio = {sel_fr:.2f} &nbsp;·&nbsp; score = {sel_fs:.3f}</div>
             </div>""", unsafe_allow_html=True)
 
             fig = go.Figure()
@@ -273,7 +281,7 @@ with dive_col:
 
             mc1, mc2, mc3 = st.columns(3)
             for col, label, val in [
-                (mc1, "Peak hour",   f"{peak_dh}{peak_per}"),
+                (mc1, "Peak hour",   f"{DAYS[day][:3]} {peak_dh}{peak_per}"),
                 (mc2, "Peak π",      f"{max(hourly_pi):.5f}"),
                 (mc3, "Peak vs avg", f"{max(hourly_pi)/uniform:.1f}×"),
             ]:
@@ -305,25 +313,28 @@ def build_table(indices):
     rows = []
     for rank, idx in enumerate(indices, 1):
         info = station_info.get(int(idx), {})
-        fr   = float(flow_ratio_by_hour[hour][idx])
-        fs   = float((flow_ratio_by_hour[hour][idx] - 1) * pi[idx] * n_stations)
+        fr   = float(flow_ratio_by_day_hour[day, hour][idx])
+        fs   = float((flow_ratio_by_day_hour[day, hour][idx] - 1) * pi[idx] * n_stations)
         rows.append({
             "#":            rank,
             "Station":      info.get('name', 'Unknown'),
             "π_i":          f"{pi[idx]:.5f}",
             "vs avg":       f"{pi[idx]/uniform:.1f}×",
-            "flow ratio":   f"{fr:.2f}",
-            "flow score":   f"{fs:.3f}",
+            "flow ratio":   round(fr, 2),
+            "flow score":   round(fs, 3),
             "direction":    "↑ accumulating" if fr > 1 else "↓ draining",
         })
     return pd.DataFrame(rows)
 
+# sort by hourly flow score so direction matches sort order
+hourly_flow_score = (flow_ratio_by_day_hour[day, hour] - 1) * pi * n_stations
+
 tc, bc = st.columns(2)
 with tc:
     st.markdown(f"**Top {top_n} — most accumulating now**")
-    st.dataframe(build_table(np.argsort(flow_score)[-top_n:][::-1]),
+    st.dataframe(build_table(np.argsort(hourly_flow_score)[-top_n:][::-1]),
                  hide_index=True, width="stretch", height=350)
 with bc:
     st.markdown(f"**Top {top_n} — most draining now**")
-    st.dataframe(build_table(np.argsort(flow_score)[:top_n]),
+    st.dataframe(build_table(np.argsort(hourly_flow_score)[:top_n]),
                  hide_index=True, width="stretch", height=350)
