@@ -58,7 +58,7 @@ READ_DTYPE = {
 
 # columns we need to keep after loading
 KEEP_COLS = [
-    'started_at', 'start_station_id', 'end_station_id',
+    'started_at', 'ended_at', 'start_station_id', 'end_station_id',
     'start_station_name', 'end_station_name',
     'start_lat', 'start_lng', 'end_lat', 'end_lng',
 ]
@@ -188,10 +188,12 @@ def partition_by_day(files, station_to_idx, reference_date, decay, bin_minutes, 
     ]
 
     # also accumulate C_global, C_per_day, arrivals, departures
-    C_global   = np.zeros((n, n), dtype='float64')
-    C_per_day  = np.zeros((7, n, n), dtype='float64')
-    arrivals   = np.zeros((7, n_bins, n), dtype='float64')
-    departures = np.zeros((7, n_bins, n), dtype='float64')
+    C_global        = np.zeros((n, n), dtype='float64')
+    C_per_day       = np.zeros((7, n, n), dtype='float64')
+    arrivals        = np.zeros((7, n_bins, n), dtype='float64')
+    departures      = np.zeros((7, n_bins, n), dtype='float64')
+    duration_sum    = np.zeros((7, n_bins), dtype='float64')  # weighted sum of durations (hours)
+    duration_weight = np.zeros((7, n_bins), dtype='float64')  # total weight for averaging
 
     for i, f in enumerate(files):
         df = read_file(f)
@@ -211,6 +213,13 @@ def partition_by_day(files, station_to_idx, reference_date, decay, bin_minutes, 
         df['day_of_week'] = df['started_at'].dt.dayofweek.astype('int8')
         total_minutes     = df['started_at'].dt.hour * 60 + df['started_at'].dt.minute
         df['bin']         = (total_minutes // bin_minutes).astype('int16')
+        # trip duration in hours
+        if 'ended_at' in df.columns:
+            df['ended_at']  = pd.to_datetime(df['ended_at'], errors='coerce')
+            df['duration_h'] = ((df['ended_at'] - df['started_at']).dt.total_seconds() / 3600)
+            df['duration_h'] = df['duration_h'].clip(lower=0, upper=24)  # exclude bad data
+        else:
+            df['duration_h'] = np.nan
         df['start_idx']   = df['start_station_id'].map(station_to_idx).astype('int32')
         df['end_idx']     = df['end_station_id'].map(station_to_idx).astype('int32')
 
@@ -234,6 +243,13 @@ def partition_by_day(files, station_to_idx, reference_date, decay, bin_minutes, 
                 if bm.any():
                     np.add.at(arrivals[day, b],   ei[bm], w[bm])
                     np.add.at(departures[day, b], si[bm], w[bm])
+                    if 'duration_h' in df.columns:
+                        valid = bm & df['duration_h'].notna()
+                        if valid.any():
+                            dur_vals = df.loc[valid, 'duration_h'].values
+                            dur_w    = w[valid.values]
+                            duration_sum[day, b]    += (dur_vals * dur_w).sum()
+                            duration_weight[day, b] += dur_w.sum()
 
             # write to parquet
             day_df = df[mask][['start_idx', 'end_idx', 'bin', 'weight']].copy()
@@ -247,7 +263,7 @@ def partition_by_day(files, station_to_idx, reference_date, decay, bin_minutes, 
         w.close()
 
     print(f"      Parquet files written to {temp_dir}")
-    return C_global, C_per_day, arrivals, departures
+    return C_global, C_per_day, arrivals, departures, duration_sum, duration_weight
 
 
 # ── pass 3: compute pi bin by bin from parquet ────────────────────────────────
@@ -337,7 +353,7 @@ def main(data_dir=DEFAULT_DATA_DIR, output_dir=DEFAULT_OUTPUT_DIR,
     station_to_idx, idx_to_station, reference_date, station_meta = build_station_index(files)
     n = len(station_to_idx)
 
-    C_global, C_per_day, arrivals, departures = partition_by_day(
+    C_global, C_per_day, arrivals, departures, duration_sum, duration_weight = partition_by_day(
         files, station_to_idx, reference_date, decay, bin_minutes, temp_dir
     )
 
@@ -347,11 +363,24 @@ def main(data_dir=DEFAULT_DATA_DIR, output_dir=DEFAULT_OUTPUT_DIR,
 
     print("\n[4/4] Saving outputs...")
     flow_ratio = compute_flow_ratios(arrivals, departures, min_each)
+
+    # Little's Law: N_in_transit = avg_duration_hours × lambda_system (trips/hour)
+    # N_docked = FLEET_SIZE - N_in_transit, varies by day and bin
+    FLEET_SIZE         = 35_000
+    avg_duration       = np.where(duration_weight > 0,
+                                  duration_sum / duration_weight, 0.2)  # default 12min
+    lambda_system      = arrivals.sum(axis=2) / (bin_minutes / 60)      # total trips/hour
+    n_in_transit       = avg_duration * lambda_system
+    n_docked           = np.clip(FLEET_SIZE - n_in_transit, 1, FLEET_SIZE)
+
     idx_to_info = build_stations_json(idx_to_station, station_meta)
 
     np.save(os.path.join(output_dir, 'pi_by_day_bin.npy'),         pi_by_day_bin)
     np.save(os.path.join(output_dir, 'pi_by_bin.npy'),             pi_by_bin)
     np.save(os.path.join(output_dir, 'flow_ratio_by_day_bin.npy'), flow_ratio)
+    np.save(os.path.join(output_dir, 'arrivals_by_day_bin.npy'),     arrivals)
+    np.save(os.path.join(output_dir, 'departures_by_day_bin.npy'),   departures)
+    np.save(os.path.join(output_dir, 'n_docked_by_day_bin.npy'),     n_docked)
     np.save(os.path.join(output_dir, 'bin_config.npy'),            np.array([bin_minutes, n_bins]))
     with open(os.path.join(output_dir, 'stations.json'), 'w') as f:
         json.dump(idx_to_info, f)
@@ -365,6 +394,9 @@ def main(data_dir=DEFAULT_DATA_DIR, output_dir=DEFAULT_OUTPUT_DIR,
     print(f"  pi_by_day_bin:         {pi_by_day_bin.shape}")
     print(f"  pi_by_bin:             {pi_by_bin.shape}")
     print(f"  flow_ratio_by_day_bin: {flow_ratio.shape}")
+    print(f"  arrivals_by_day_bin:   {arrivals.shape}")
+    print(f"  departures_by_day_bin: {departures.shape}")
+    print(f"  n_docked_by_day_bin:   {n_docked.shape}  (mean={n_docked.mean():.0f})")
     print(f"  bin_minutes:           {bin_minutes} ({n_bins} bins/day)")
     print(f"  stations:              {len(idx_to_info)}")
     print(f"  outputs -> {os.path.abspath(output_dir)}")

@@ -32,10 +32,10 @@ def main():
     parser.add_argument('--data-dir',       default=os.path.join(SRC_DIR, '..', 'data', 'raw'))
     parser.add_argument('--output-dir',     default=os.path.join(SRC_DIR, '..', 'outputs'))
     parser.add_argument('--decay',          default='0.9995')
-    parser.add_argument('--min-each',       default='5')
-    parser.add_argument('--alpha1',         default='0.1')
-    parser.add_argument('--alpha2',         default='0.01')
-    parser.add_argument('--bin-minutes',    default='60',
+    parser.add_argument('--min-each',       default='1')
+    parser.add_argument('--alpha1',         default='0.05')
+    parser.add_argument('--alpha2',         default='0.005')
+    parser.add_argument('--bin-minutes',    default='30',
                         help='Bin size in minutes (60=hourly, 30=half-hourly, 15=quarter-hourly)')
     parser.add_argument('--temp-dir',       default=os.path.join(SRC_DIR, '..', 'temp'))
     parser.add_argument('--keep-temp',      action='store_true')

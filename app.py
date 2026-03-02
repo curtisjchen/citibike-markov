@@ -37,12 +37,17 @@ def load_data():
     pi_matrix              = np.load('outputs/pi_by_bin.npy')
     pi_day_hour            = np.load('outputs/pi_by_day_bin.npy')
     flow_ratio_by_day_hour = np.load('outputs/flow_ratio_by_day_bin.npy')
+    arrivals_by_day_bin    = np.load('outputs/arrivals_by_day_bin.npy')
+    departures_by_day_bin  = np.load('outputs/departures_by_day_bin.npy')
+    n_docked_by_day_bin    = np.load('outputs/n_docked_by_day_bin.npy')
     with open('outputs/stations.json', 'r') as f:
         station_info = json.load(f)
     station_info = {int(k): v for k, v in station_info.items()}
-    return pi_matrix, pi_day_hour, flow_ratio_by_day_hour, station_info, int(bin_config[0]), int(bin_config[1])
+    return pi_matrix, pi_day_hour, flow_ratio_by_day_hour, arrivals_by_day_bin, departures_by_day_bin, n_docked_by_day_bin, station_info, int(bin_config[0]), int(bin_config[1])
 
-pi_matrix, pi_day_hour, flow_ratio_by_day_hour, station_info, bin_minutes, n_bins = load_data()
+pi_matrix, pi_day_hour, flow_ratio_by_day_hour, arrivals_by_day_bin, departures_by_day_bin, n_docked_by_day_bin, station_info, bin_minutes, n_bins = load_data()
+
+FLEET_SIZE = 35_000
 n_stations   = pi_matrix.shape[1]
 uniform      = 1 / n_stations
 name_to_idx  = {info['name']: idx for idx, info in station_info.items() if info.get('name')}
@@ -128,24 +133,43 @@ st.markdown("# 🚲 CITIBIKE EXPLORER")
 # ── controls ──────────────────────────────────────────────────────────────────
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
+# precompute time label for each bin
+all_bin_labels = [f"{(b * bin_minutes) // 60}:{(b * bin_minutes) % 60:02d}" for b in range(n_bins)]
+
 ctrl_day, ctrl_left, ctrl_mid = st.columns([2, 4, 1])
 with ctrl_day:
     day = st.select_slider("Day", options=list(range(7)),
                            format_func=lambda d: DAYS[d],
                            value=0, label_visibility="collapsed")
 with ctrl_left:
-    hour = st.slider("", 0, n_bins - 1, min(8 * 60 // bin_minutes, n_bins - 1), label_visibility="collapsed")
+    hour_label = st.select_slider("", options=all_bin_labels,
+                                   value=all_bin_labels[min(8 * 60 // bin_minutes, n_bins - 1)],
+                                   label_visibility="collapsed")
+    hour = all_bin_labels.index(hour_label)
 with ctrl_mid:
+    total_mins = hour * bin_minutes
+    t_hour     = total_mins // 60
+    t_min      = total_mins % 60
+    period     = "AM" if t_hour < 12 else "PM"
+    dh         = t_hour % 12 or 12
+    time_str   = f"{dh}:{t_min:02d}"
     st.markdown(f"""
     <div style="padding-top:6px; text-align:center; line-height:1.2">
         <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6b7280; letter-spacing:2px; text-transform:uppercase; display:block">{DAYS[day][:3]}</span>
-        <span style="font-family:'IBM Plex Mono',monospace; font-size:26px; color:#00d4aa; font-weight:600">{dh}</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#6b7280; margin-left:2px">{period}</span>
+        <span style="font-family:'IBM Plex Mono',monospace; font-size:26px; color:#00d4aa; font-weight:600">{time_str}</span><span style="font-family:'IBM Plex Mono',monospace; font-size:13px; color:#6b7280; margin-left:2px">{period}</span>
     </div>""", unsafe_allow_html=True)
 top_n = 30
 
-# ── pi and flow score for this hour + day ────────────────────────────────────
-pi         = pi_day_hour[day, hour]
-flow_score = (flow_ratio_by_day_hour[day, hour] - 1) * pi * n_stations
+# ── Little's Law metrics for this day/bin ────────────────────────────────────
+pi          = pi_day_hour[day, hour]
+n_docked    = float(n_docked_by_day_bin[day, hour])                   # fleet minus in-transit
+bikes       = pi * n_docked                                           # L_i = π_i × N_docked
+arr         = arrivals_by_day_bin[day, hour]                          # weighted arrivals
+dep         = departures_by_day_bin[day, hour]                        # weighted departures
+total_trips = arr + dep
+net_flow    = (arr - dep) / (bin_minutes / 60)                        # bikes/hour net
+# for sort/display we use net_flow — positive = accumulating, negative = draining
+flow_score  = net_flow   # keep name for compatibility with downstream code
 
 top_idx    = int(np.argsort(pi)[-1])
 bot_idx    = int(np.argsort(pi)[0])
@@ -155,8 +179,8 @@ drain_idx  = int(np.argsort(flow_score)[0])     # highest urgency drainer right 
 # ── metrics ───────────────────────────────────────────────────────────────────
 c1, c2, c3, c4 = st.columns(4)
 for col, label, value in [
-    (c1, "Most accumulating now",  station_info.get(accum_idx, {}).get('name', '—')),
-    (c2, "Most draining now",      station_info.get(drain_idx, {}).get('name', '—')),
+    (c1, "Most bikes accumulating",  station_info.get(accum_idx, {}).get('name', '—')),
+    (c2, "Most bikes draining",      station_info.get(drain_idx, {}).get('name', '—')),
     (c3, "Highest activity",       station_info.get(top_idx,   {}).get('name', '—')),
     (c4, "Selected station",       st.session_state.selected_name or "Click map or search →"),
 ]:
@@ -216,10 +240,18 @@ with dive_col:
             sel_idx    = st.session_state.selected_idx
             sel_name   = st.session_state.selected_name
             sel_pi     = float(pi[sel_idx])
+            sel_bikes  = float(pi[sel_idx] * n_docked)
+            sel_net    = float(net_flow[sel_idx])
             sel_fr     = float(flow_ratio_by_day_hour[day, hour][sel_idx])
-            sel_fs     = float((flow_ratio_by_day_hour[day, hour][sel_idx] - 1) * pi[sel_idx] * n_stations)
+            # time labels for x axis: "0:00", "0:15", "1:00", etc.
+            bin_labels = [
+                f"{(b * bin_minutes) // 60}:{(b * bin_minutes) % 60:02d}"
+                for b in range(n_bins)
+            ]
+            bin_labels = bin_labels  # keep as list for plotly
             hourly_pi  = [float(pi_day_hour[day, b][sel_idx]) for b in range(n_bins)]
-            hourly_fs  = [float((flow_ratio_by_day_hour[day, b][sel_idx] - 1) * pi_day_hour[day, b][sel_idx] * n_stations) for b in range(n_bins)]
+            hourly_bikes  = [float(pi_day_hour[day, b][sel_idx] * float(n_docked_by_day_bin[day, b])) for b in range(n_bins)]
+            hourly_net    = [float((arrivals_by_day_bin[day, b][sel_idx] - departures_by_day_bin[day, b][sel_idx]) / (bin_minutes / 60)) for b in range(n_bins)]
             peak_b      = int(np.argmax(hourly_pi))
             peak_mins   = peak_b * bin_minutes
             peak_t_hour = peak_mins // 60
@@ -231,12 +263,12 @@ with dive_col:
             st.markdown(f"""
             <div class="selected-banner">
                 <div class="selected-name">{sel_name}</div>
-                <div class="selected-sub">π = {sel_pi:.5f} &nbsp;·&nbsp; {sel_pi/uniform:.1f}× average at {DAYS[day]} {dh}{period} &nbsp;·&nbsp; flow ratio = {sel_fr:.2f} &nbsp;·&nbsp; score = {sel_fs:.3f}</div>
+                <div class="selected-sub">~{sel_bikes:.1f} bikes (π={sel_pi:.5f}) &nbsp;·&nbsp; net flow = {sel_net:+.1f} bikes/hr &nbsp;·&nbsp; flow ratio = {sel_fr:.2f}</div>
             </div>""", unsafe_allow_html=True)
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=list(range(n_bins)), y=hourly_pi,
+                x=bin_labels, y=hourly_bikes,
                 mode='lines+markers',
                 line=dict(color='#00d4aa', width=2),
                 marker=dict(size=5, color='#00d4aa'),
@@ -244,12 +276,12 @@ with dive_col:
                 name='π_i', hovertemplate='<b>%{x}:00</b><br>π = %{y:.5f}<extra></extra>'
             ))
             fig.add_trace(go.Scatter(
-                x=list(range(n_bins)), y=hourly_fs,
+                x=bin_labels, y=hourly_net,
                 mode='lines',
                 line=dict(color='#ff6b6b', width=1.5, dash='dot'),
-                name='flow score',
+                name='net flow (bikes/hr)',
                 yaxis='y2',
-                hovertemplate='<b>%{x}:00</b><br>flow score = %{y:.5f}<extra></extra>'
+                hovertemplate='<b>%{x}</b><br>net flow = %{y:.1f} bikes/hr<extra></extra>'
             ))
             fig.add_vline(x=hour, line_dash="dash", line_color="rgba(255,255,255,0.2)", line_width=1)
             fig.add_trace(go.Scatter(
@@ -258,12 +290,14 @@ with dive_col:
                 name='', hovertemplate='<b>%{x}:00</b><br>π = %{y:.5f}<extra></extra>'
             ))
             fig.update_layout(
-                xaxis=dict(title=f"Bin ({bin_minutes}min)", tickmode='linear', dtick=max(1, n_bins//12),
+                xaxis=dict(title="Time", tickmode='array',
+                         tickvals=bin_labels[::max(1, n_bins//12)],
+                         ticktext=bin_labels[::max(1, n_bins//12)],
                            gridcolor='#1e2130', tickfont=dict(family='IBM Plex Mono', size=10),
                            range=[-0.5, n_bins - 0.5]),
                 yaxis=dict(title="π_i", gridcolor='#1e2130',
                            tickfont=dict(family='IBM Plex Mono', size=10)),
-                yaxis2=dict(title="flow score", overlaying='y', side='right',
+                yaxis2=dict(title="net flow (bikes/hr)", overlaying='y', side='right',
                             tickfont=dict(family='IBM Plex Mono', size=10),
                             showgrid=False, zeroline=False),
                 paper_bgcolor='#161920', plot_bgcolor='#161920',
@@ -284,7 +318,7 @@ with dive_col:
             mc1, mc2, mc3 = st.columns(3)
             for col, label, val in [
                 (mc1, "Peak time",   f"{DAYS[day][:3]} {peak_time}{peak_per}"),
-                (mc2, "Peak π",      f"{max(hourly_pi):.5f}"),
+                (mc2, "Peak bikes",  f"{max(hourly_bikes):.1f}"),
                 (mc3, "Peak vs avg", f"{max(hourly_pi)/uniform:.1f}×"),
             ]:
                 with col:
@@ -323,7 +357,8 @@ def build_table(indices):
             "π_i":          f"{pi[idx]:.5f}",
             "vs avg":       f"{pi[idx]/uniform:.1f}×",
             "flow ratio":   round(fr, 2),
-            "flow score":   round(fs, 3),
+            "exp. bikes":   round(float(pi[idx] * n_docked), 1),
+            "net flow":     round(float(net_flow[idx]), 1),
             "direction":    "↑ accumulating" if fr > 1 else "↓ draining",
         })
     return pd.DataFrame(rows)
