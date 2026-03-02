@@ -33,16 +33,16 @@ st.markdown("""
 # ── load data ─────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    pi_matrix         = np.load('outputs/pi_by_hour.npy')
-    pi_day_hour        = np.load('outputs/pi_by_day_hour.npy')
-    flow_ratio         = np.load('outputs/flow_ratio.npy')
-    flow_ratio_by_day_hour = np.load('outputs/flow_ratio_by_day_hour.npy')
+    bin_config             = np.load('outputs/bin_config.npy')
+    pi_matrix              = np.load('outputs/pi_by_bin.npy')
+    pi_day_hour            = np.load('outputs/pi_by_day_bin.npy')
+    flow_ratio_by_day_hour = np.load('outputs/flow_ratio_by_day_bin.npy')
     with open('outputs/stations.json', 'r') as f:
         station_info = json.load(f)
     station_info = {int(k): v for k, v in station_info.items()}
-    return pi_matrix, pi_day_hour, flow_ratio, flow_ratio_by_day_hour, station_info
+    return pi_matrix, pi_day_hour, flow_ratio_by_day_hour, station_info, int(bin_config[0]), int(bin_config[1])
 
-pi_matrix, pi_day_hour, flow_ratio, flow_ratio_by_day_hour, station_info = load_data()
+pi_matrix, pi_day_hour, flow_ratio_by_day_hour, station_info, bin_minutes, n_bins = load_data()
 n_stations   = pi_matrix.shape[1]
 uniform      = 1 / n_stations
 name_to_idx  = {info['name']: idx for idx, info in station_info.items() if info.get('name')}
@@ -134,10 +134,8 @@ with ctrl_day:
                            format_func=lambda d: DAYS[d],
                            value=0, label_visibility="collapsed")
 with ctrl_left:
-    hour = st.slider("Hour of day", 0, 23, 8, label_visibility="collapsed")
+    hour = st.slider("", 0, n_bins - 1, min(8 * 60 // bin_minutes, n_bins - 1), label_visibility="collapsed")
 with ctrl_mid:
-    period = "AM" if hour < 12 else "PM"
-    dh = hour % 12 or 12
     st.markdown(f"""
     <div style="padding-top:6px; text-align:center; line-height:1.2">
         <span style="font-family:'IBM Plex Mono',monospace; font-size:11px; color:#6b7280; letter-spacing:2px; text-transform:uppercase; display:block">{DAYS[day][:3]}</span>
@@ -220,11 +218,15 @@ with dive_col:
             sel_pi     = float(pi[sel_idx])
             sel_fr     = float(flow_ratio_by_day_hour[day, hour][sel_idx])
             sel_fs     = float((flow_ratio_by_day_hour[day, hour][sel_idx] - 1) * pi[sel_idx] * n_stations)
-            hourly_pi  = [float(pi_day_hour[day, h][sel_idx]) for h in range(24)]
-            hourly_fs  = [float((flow_ratio_by_day_hour[day, h][sel_idx] - 1) * pi_day_hour[day, h][sel_idx] * n_stations) for h in range(24)]
-            peak_h    = int(np.argmax(hourly_pi))
-            peak_dh   = peak_h % 12 or 12
-            peak_per  = "AM" if peak_h < 12 else "PM"
+            hourly_pi  = [float(pi_day_hour[day, b][sel_idx]) for b in range(n_bins)]
+            hourly_fs  = [float((flow_ratio_by_day_hour[day, b][sel_idx] - 1) * pi_day_hour[day, b][sel_idx] * n_stations) for b in range(n_bins)]
+            peak_b      = int(np.argmax(hourly_pi))
+            peak_mins   = peak_b * bin_minutes
+            peak_t_hour = peak_mins // 60
+            peak_t_min  = peak_mins % 60
+            peak_dh     = peak_t_hour % 12 or 12
+            peak_per    = "AM" if peak_t_hour < 12 else "PM"
+            peak_time   = f"{peak_dh}:{peak_t_min:02d}"
 
             st.markdown(f"""
             <div class="selected-banner">
@@ -234,7 +236,7 @@ with dive_col:
 
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=list(range(24)), y=hourly_pi,
+                x=list(range(n_bins)), y=hourly_pi,
                 mode='lines+markers',
                 line=dict(color='#00d4aa', width=2),
                 marker=dict(size=5, color='#00d4aa'),
@@ -242,7 +244,7 @@ with dive_col:
                 name='π_i', hovertemplate='<b>%{x}:00</b><br>π = %{y:.5f}<extra></extra>'
             ))
             fig.add_trace(go.Scatter(
-                x=list(range(24)), y=hourly_fs,
+                x=list(range(n_bins)), y=hourly_fs,
                 mode='lines',
                 line=dict(color='#ff6b6b', width=1.5, dash='dot'),
                 name='flow score',
@@ -256,9 +258,9 @@ with dive_col:
                 name='', hovertemplate='<b>%{x}:00</b><br>π = %{y:.5f}<extra></extra>'
             ))
             fig.update_layout(
-                xaxis=dict(title="Hour", tickmode='linear', dtick=2,
+                xaxis=dict(title=f"Bin ({bin_minutes}min)", tickmode='linear', dtick=max(1, n_bins//12),
                            gridcolor='#1e2130', tickfont=dict(family='IBM Plex Mono', size=10),
-                           range=[-0.5, 23.5]),
+                           range=[-0.5, n_bins - 0.5]),
                 yaxis=dict(title="π_i", gridcolor='#1e2130',
                            tickfont=dict(family='IBM Plex Mono', size=10)),
                 yaxis2=dict(title="flow score", overlaying='y', side='right',
@@ -281,7 +283,7 @@ with dive_col:
 
             mc1, mc2, mc3 = st.columns(3)
             for col, label, val in [
-                (mc1, "Peak hour",   f"{DAYS[day][:3]} {peak_dh}{peak_per}"),
+                (mc1, "Peak time",   f"{DAYS[day][:3]} {peak_time}{peak_per}"),
                 (mc2, "Peak π",      f"{max(hourly_pi):.5f}"),
                 (mc3, "Peak vs avg", f"{max(hourly_pi)/uniform:.1f}×"),
             ]:
