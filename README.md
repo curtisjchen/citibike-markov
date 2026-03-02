@@ -63,9 +63,10 @@ Open [http://localhost:8501](http://localhost:8501) in your browser.
 ## App features
 
 - **Interactive map** — stations colored green (high π) → red (low π) by hour
-- **Hour slider** — scrub through 24 hours to see how the distribution shifts
+- **Day slider** — scrub through Monday - Sunday to see how the distribution shifts
+- **Time bin slider** — scrub through 24 hours to see how the distribution shifts
 - **24-hour profile** — click any station or search by name to see its π_i across the full day
-- **Flow score** — identifies stations needing rebalancing at the current hour, weighted by both traffic volume and directional imbalance
+- **Flow score** — flow score is calculated using π and the ratio of arrivals to departures
 - **Station rankings** — top/bottom N stations by flow, with flow ratio and direction
 
 ## Project structure
